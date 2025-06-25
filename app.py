@@ -1,108 +1,148 @@
+import ast
+from pathlib import Path
+
+# Redefine app_code after code execution state reset
+app_code = """
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from transformers import pipeline
 from sklearn.feature_extraction.text import CountVectorizer
 from datetime import datetime
-from io import StringIO
+import io
 
-# Load pipelines
-classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-sentiment_analyzer = pipeline("sentiment-analysis")
-summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+# -------------------- PAGE CONFIG --------------------
+st.set_page_config(page_title="AI Feedback Categorizer", layout="wide")
+st.title("🧠 AI-Generated User Feedback Categorizer")
 
-# Categories for classification
-CATEGORIES = ["Bug", "Feature Request", "Complaint", "Compliment", "General"]
+# -------------------- MODEL LOADING (CACHE) --------------------
+@st.cache_resource
+def load_models():
+    sentiment_model = pipeline(
+        "sentiment-analysis",
+        model="distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+        device=-1
+    )
+    classifier_model = pipeline(
+        "zero-shot-classification",
+        model="facebook/bart-large-mnli",
+        device=-1
+    )
+    return classifier_model, sentiment_model
 
-@st.cache_data(show_spinner=False)
-def process_feedback(df):
-    def classify(feedback):
-        class_result = classifier(feedback, CATEGORIES, multi_label=True)
-        assigned = [label for label, score in zip(class_result['labels'], class_result['scores']) if score > 0.5]
-        if not assigned:
-            assigned = ["General"]
-        sentiment = sentiment_analyzer(feedback)[0]["label"]
-        urgency = "High" if any(x in assigned for x in ["Bug", "Complaint"]) else "Medium" if "Feature Request" in assigned else "Low"
-        summary = summarizer(feedback, max_length=30, min_length=5, do_sample=False)[0]['summary_text']
-        return pd.Series([assigned, sentiment, urgency, summary])
+classifier, sentiment_analyzer = load_models()
 
-    df[['categories', 'sentiment', 'urgency', 'summary']] = df['feedback'].apply(classify)
-    vectorizer = CountVectorizer(stop_words='english', max_features=10)
-    keywords = vectorizer.fit_transform(df['feedback'])
-    top_keywords = vectorizer.get_feature_names_out().tolist()
-    return df, top_keywords
+# -------------------- FILE UPLOAD --------------------
+st.sidebar.header("📂 Upload Feedback CSV")
+uploaded_file = st.sidebar.file_uploader("Upload a CSV file with feedback column", type=["csv"])
 
-# UI
-st.title("AI-Generated User Feedback Categorizer")
-
-# File Upload
-uploaded_file = st.file_uploader("Upload CSV with feedback column", type=["csv"])
 if uploaded_file:
-    df_raw = pd.read_csv(uploaded_file)
-    if 'review' in df_raw.columns:
-        df_raw = df_raw.rename(columns={'review': 'feedback'})
-    if 'feedback' not in df_raw.columns:
-        st.error("CSV must have a 'feedback' or 'review' column.")
-        st.stop()
-    if 'timestamp' not in df_raw.columns:
-        df_raw['timestamp'] = pd.date_range(start="2025-01-01", periods=len(df_raw), freq='D')
-    df, keywords = process_feedback(df_raw.copy())
+    try:
+        df = pd.read_csv(uploaded_file)
 
-    # Filters
-    st.sidebar.title("Filter Feedback")
-    sentiment_filter = st.sidebar.multiselect("Sentiment", options=df['sentiment'].unique(), default=df['sentiment'].unique())
-    urgency_filter = st.sidebar.multiselect("Urgency", options=df['urgency'].unique(), default=df['urgency'].unique())
-    search_text = st.sidebar.text_input("Search text")
+        # Rename if column is 'review'
+        if 'feedback' not in df.columns:
+            if 'review' in df.columns:
+                df.rename(columns={'review': 'feedback'}, inplace=True)
+            else:
+                st.error("⚠️ CSV must contain a 'feedback' or 'review' column.")
+                st.stop()
 
-    filtered = df[
-        df['sentiment'].isin(sentiment_filter) &
-        df['urgency'].isin(urgency_filter) &
-        df['feedback'].str.contains(search_text, case=False, na=False)
-    ]
+        df.dropna(subset=['feedback'], inplace=True)
+        df.reset_index(drop=True, inplace=True)
 
-    st.subheader("Filtered Feedback")
-    st.dataframe(filtered)
+        st.success(f"✅ Uploaded {len(df)} rows.")
+        st.write(df.head())
 
-    # Alerts for urgent feedback
-    critical = filtered[(filtered['sentiment'] == "NEGATIVE") & (filtered['urgency'] == "High")]
-    if not critical.empty:
-        st.warning(f"🚨 {len(critical)} urgent negative feedback(s) found!")
+        # -------------------- ANALYSIS --------------------
+        st.subheader("🔍 Processing Feedback...")
 
-    # Distributions
-    st.subheader("Category Distribution")
-    all_cats = [c for sub in filtered['categories'] for c in sub]
-    cat_df = pd.DataFrame({'category': all_cats})
-    st.bar_chart(cat_df['category'].value_counts())
+        categories = ["Bug", "Feature Request", "Complaint", "Compliment", "General"]
 
-    st.subheader("Sentiment Distribution")
-    st.bar_chart(filtered['sentiment'].value_counts())
+        def process_feedback(text):
+            class_result = classifier(text, candidate_labels=categories, multi_label=True)
+            assigned = [label for label, score in zip(class_result['labels'], class_result['scores']) if score > 0.5]
+            if not assigned:
+                assigned = ["General"]
+            sentiment = sentiment_analyzer(text)[0]['label']
+            if "Bug" in assigned or "Complaint" in assigned:
+                urgency = "High"
+            elif "Feature Request" in assigned:
+                urgency = "Medium"
+            else:
+                urgency = "Low"
+            return pd.Series([assigned, sentiment, urgency])
 
-    st.subheader("Urgency Distribution")
-    st.bar_chart(filtered['urgency'].value_counts())
+        with st.spinner("Running LLM-based classification..."):
+            df[['categories', 'sentiment', 'urgency']] = df['feedback'].apply(process_feedback)
+            vectorizer = CountVectorizer(stop_words='english', max_features=10)
+            X = vectorizer.fit_transform(df['feedback'])
+            keywords = vectorizer.get_feature_names_out()
 
-    # Trend over time
-    st.subheader("Sentiment Over Time")
-    filtered['date'] = pd.to_datetime(filtered['timestamp']).dt.date
-    time_data = filtered.groupby(['date', 'sentiment']).size().unstack(fill_value=0)
-    st.line_chart(time_data)
+        # -------------------- VISUALIZATIONS --------------------
+        st.subheader("📊 Category Distribution")
+        all_cats = [c for sublist in df['categories'] for c in sublist]
+        cat_df = pd.DataFrame({'category': all_cats})
+        st.bar_chart(cat_df['category'].value_counts())
 
-    # Keywords
-    st.subheader("Top Keywords")
-    st.write(", ".join(keywords))
+        st.subheader("📊 Sentiment Distribution")
+        st.bar_chart(df['sentiment'].value_counts())
 
-    # Feedback summary section
-    st.subheader("Summarized Feedback")
-    for _, row in filtered.iterrows():
-        st.markdown(f"**Feedback:** {row['feedback']}")
-        st.markdown(f"- **Summary:** {row['summary']}")
-        st.markdown(f"- **Categories:** {row['categories']}")
-        st.markdown(f"- **Sentiment:** {row['sentiment']}, **Urgency:** {row['urgency']}")
-        st.markdown("---")
+        st.subheader("📊 Urgency Distribution")
+        st.bar_chart(df['urgency'].value_counts())
 
-    # Export filtered
-    csv = filtered.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Filtered CSV", csv, "filtered_feedback.csv", "text/csv")
+        st.subheader("🗝️ Top Keywords")
+        st.markdown(", ".join(keywords))
+
+        st.subheader("🔎 Search Feedback")
+        search_term = st.text_input("Enter keyword to search in feedback:")
+        if search_term:
+            filtered = df[df['feedback'].str.contains(search_term, case=False)]
+            st.write(f"Found {len(filtered)} results:")
+            st.dataframe(filtered[['feedback', 'categories', 'sentiment', 'urgency']])
+
+        st.subheader("📋 Feedback Summaries")
+        for i, row in df.iterrows():
+            st.markdown(f"**{i+1}. {row['feedback']}**")
+            st.markdown(f"- Categories: `{row['categories']}`")
+            st.markdown(f"- Sentiment: `{row['sentiment']}`, Urgency: `{row['urgency']}`")
+
+        # -------------------- REPORT SUMMARY --------------------
+        st.subheader("📑 Summary Report")
+        total = len(df)
+        pos = (df['sentiment'] == 'POSITIVE').sum()
+        neg = (df['sentiment'] == 'NEGATIVE').sum()
+        high_urgency = (df['urgency'] == 'High').sum()
+
+        st.markdown(f"**Total Feedback Analyzed:** {total}")
+        st.markdown(f"**Positive Feedback:** {pos}")
+        st.markdown(f"**Negative Feedback:** {neg}")
+        st.markdown(f"**High Urgency Issues:** {high_urgency}")
+
+        # -------------------- CSV DOWNLOAD --------------------
+        st.subheader("📥 Download Results")
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label="Download categorized data as CSV",
+            data=csv_buffer.getvalue(),
+            file_name=f"categorized_feedback_{timestamp}.csv",
+            mime="text/csv"
+        )
+
+    except Exception as e:
+        st.error(f"🚫 Error processing file: {e}")
 
 else:
-    st.info("Please upload a CSV file to begin analysis.")
+    st.info("👈 Upload a CSV file with a 'feedback' or 'review' column to begin.")
+"""
+
+# Check for syntax errors
+try:
+    ast.parse(app_code)
+    result = "✅ No syntax errors detected in app.py."
+except SyntaxError as e:
+    result = f"❌ Syntax error in app.py: {e}"
+
+result
