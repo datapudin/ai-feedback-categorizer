@@ -2,75 +2,107 @@ import streamlit as st
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import base64
-import io
-import warnings
 from transformers import pipeline
-
-warnings.filterwarnings("ignore", category=UserWarning)
+import time
+import numpy as np
+import io
+from wordcloud import WordCloud
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 st.set_page_config(page_title="AI Feedback Categorizer", layout="wide")
-st.title("🤖 AI-Generated User Feedback Categorizer")
+st.title("🧠 AI-Generated User Feedback Categorizer")
 
-st.sidebar.header("Upload CSV File")
-uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type=["csv"])
-
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    if 'review' in df.columns:
-        df.rename(columns={'review': 'feedback'}, inplace=True)
-
-    st.write("### Sample Data")
-    st.dataframe(df.head())
-
+@st.cache_resource(show_spinner=False)
+def load_models():
     classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=-1)
-    sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", device=-1)
+    sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english", device=-1)
+    return classifier, sentiment_analyzer
 
-    categories = ["Bug Report", "Feature Request", "Complaint", "Compliment", "General Feedback"]
+classifier, sentiment_analyzer = load_models()
 
-    st.write("### Processing Feedback...")
-    feedback_texts = df['feedback'].astype(str).tolist()
+@st.cache_data(show_spinner=False)
+def process_feedback(df, classifier, sentiment_analyzer):
+    categories = ["Bug", "Feature Request", "Complaint", "Compliment", "General Feedback"]
+    labels, sentiments, urgencies, summaries = [], [], [], []
 
-    results = []
-    for feedback in feedback_texts:
+    for feedback in df['feedback']:
         try:
-            classification = classifier(feedback, categories)
-            top_category = classification['labels'][0]
-            sentiment = sentiment_analyzer(feedback)[0]
-            urgency = "High" if sentiment['label'] == "NEGATIVE" and sentiment['score'] > 0.8 else "Low"
+            result = classifier(feedback, candidate_labels=categories)
+            top_labels = [lbl for lbl, score in zip(result['labels'], result['scores']) if score > 0.3]
+            labels.append(top_labels if top_labels else ['General Feedback'])
 
-            results.append({
-                "feedback": feedback,
-                "category": top_category,
-                "sentiment": sentiment['label'],
-                "sentiment_score": round(sentiment['score'], 2),
-                "urgency": urgency
-            })
+            sent_result = sentiment_analyzer(feedback)[0]
+            sentiments.append(sent_result['label'])
+
+            urgency = 'High' if ('bug' in [l.lower() for l in top_labels] and sent_result['label'] == 'NEGATIVE') else 'Low'
+            urgencies.append(urgency)
+
+            # Summarization skipped for performance, can be added if needed
+            summaries.append(feedback[:120] + '...')
+
         except Exception as e:
-            results.append({"feedback": feedback, "category": "Error", "sentiment": "Error", "sentiment_score": 0, "urgency": "Low"})
+            labels.append(['Uncategorized'])
+            sentiments.append('Neutral')
+            urgencies.append('Low')
+            summaries.append(feedback[:120] + '...')
 
-    df_result = pd.DataFrame(results)
-    st.write("### Categorized Feedback")
-    st.dataframe(df_result.head())
+    df['category'] = labels
+    df['sentiment'] = sentiments
+    df['urgency'] = urgencies
+    df['summary'] = summaries
 
-    st.write("### Insights Dashboard")
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
-    sns.countplot(y='category', hue='category', data=df_result, ax=ax1,
-                  order=df_result['category'].value_counts().index, palette="viridis", legend=False)
+    return df
+
+def display_dashboard(df):
+    st.write("### 📊 Feedback Analysis Dashboard")
+    col1, col2 = st.columns([2, 1])
+
+    # Category distribution
+    all_categories = [cat for sublist in df['category'] for cat in sublist]
+    cat_df = pd.DataFrame({'category': all_categories})
+    fig, ax1 = plt.subplots()
+    sns.countplot(y='category', data=cat_df, ax=ax1, order=cat_df['category'].value_counts().index, palette="viridis")
     ax1.set_title("Category Distribution")
+    col1.pyplot(fig)
 
-    sns.countplot(x='sentiment', hue='sentiment', data=df_result, ax=ax2,
-                  palette="Set2", legend=False)
-    ax2.set_title("Sentiment Distribution")
+    # Sentiment distribution
+    fig, ax2 = plt.subplots()
+    sns.countplot(x='sentiment', data=df, palette="Set2", ax=ax2)
+    ax2.set_title("Sentiment Overview")
+    col2.pyplot(fig)
 
-    sns.countplot(x='urgency', hue='urgency', data=df_result, ax=ax3,
-                  palette="Reds", legend=False)
-    ax3.set_title("Urgency Level")
-
+    # Urgency overview
+    fig, ax3 = plt.subplots()
+    sns.countplot(x='urgency', data=df, palette="Reds", ax=ax3)
+    ax3.set_title("Urgency Breakdown")
     st.pyplot(fig)
 
-    csv = df_result.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    st.markdown(f"### 📥 [Download Categorized Feedback CSV](data:file/csv;base64,{b64})", unsafe_allow_html=True)
+    # WordCloud of keywords
+    words = " ".join(df['feedback']).lower()
+    words = " ".join([word for word in words.split() if word not in ENGLISH_STOP_WORDS])
+    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(words)
+    st.image(wordcloud.to_array(), caption='Most Common Keywords')
+
+    # Summary Stats
+    st.markdown("### 📌 Business Insights")
+    st.markdown(f"- Total Feedbacks: **{len(df)}**")
+    st.markdown(f"- High Urgency Issues: **{sum(df['urgency'] == 'High')}**")
+    st.markdown(f"- Positive Feedbacks: **{sum(df['sentiment'] == 'POSITIVE')}**")
+    st.markdown(f"- Complaints Identified: **{sum(df['category'].apply(lambda x: 'Complaint' in x))}**")
+
+    # Download report
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    st.download_button("Download Categorized Feedback", csv_buffer.getvalue(), file_name="categorized_feedback.csv", mime="text/csv")
+
+uploaded_file = st.file_uploader("Upload a CSV file with a 'feedback' column", type="csv")
+if uploaded_file is not None:
+    df_raw = pd.read_csv(uploaded_file)
+    if 'feedback' not in df_raw.columns:
+        st.error("CSV must contain a column named 'feedback'.")
+    else:
+        with st.spinner("Processing feedback... this may take a while on CPU..."):
+            df_processed = process_feedback(df_raw.copy(), classifier, sentiment_analyzer)
+        display_dashboard(df_processed)
 else:
-    st.warning("📤 Please upload a CSV file to begin analysis.")
+    st.info("📥 Please upload a CSV file to begin analysis.")
