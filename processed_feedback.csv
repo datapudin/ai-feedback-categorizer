@@ -1,0 +1,6 @@
+feedback,source,timestamp,categories,sentiment,urgency
+The app crashes every time I try to upload a photo.,Google Play,2025-06-01,"['Complaint', 'Bug']",NEGATIVE,High
+Love the new dark mode feature!,App Store,2025-06-02,['Compliment'],POSITIVE,Low
+Can you add support for multiple accounts?,Email,2025-06-03,"['Feature Request', 'Complaint']",NEGATIVE,High
+Customer support was very helpful.,Trustpilot,2025-06-04,['Compliment'],POSITIVE,Low
+The login process is too slow.,Google Play,2025-06-05,"['Complaint', 'Bug', 'General']",NEGATIVE,High
