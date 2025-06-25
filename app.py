@@ -1,8 +1,3 @@
-import ast
-from pathlib import Path
-
-# Redefine app_code after code execution state reset
-app_code = """
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -40,7 +35,6 @@ if uploaded_file:
     try:
         df = pd.read_csv(uploaded_file)
 
-        # Rename if column is 'review'
         if 'feedback' not in df.columns:
             if 'review' in df.columns:
                 df.rename(columns={'review': 'feedback'}, inplace=True)
@@ -136,13 +130,3 @@ if uploaded_file:
 
 else:
     st.info("👈 Upload a CSV file with a 'feedback' or 'review' column to begin.")
-"""
-
-# Check for syntax errors
-try:
-    ast.parse(app_code)
-    result = "✅ No syntax errors detected in app.py."
-except SyntaxError as e:
-    result = f"❌ Syntax error in app.py: {e}"
-
-result
