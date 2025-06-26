@@ -1,26 +1,45 @@
-import requests
-from bs4 import BeautifulSoup
+from google_play_scraper import reviews, Sort
 import pandas as pd
+import os
 
-def scrape_google_play_reviews(app_id, max_reviews=50):
-    url = f"https://play.google.com/store/apps/details?id={app_id}&hl=en&gl=US"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-    }
-    response = requests.get(url, headers=headers)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    reviews = []
-    for span in soup.select("span[jsname='bN97Pc']"):
-        review = span.get_text(strip=True)
-        if review and len(reviews) < max_reviews:
-            reviews.append(review)
-    df = pd.DataFrame(reviews, columns=["review"])
-    df["source"] = "Google Play"
-    df["timestamp"] = pd.date_range(start='2025-01-01', periods=len(df), freq='D')
-    return df
+# List of app IDs
+app_ids = [
+    "com.whatsapp", "com.instagram.android", "com.facebook.katana", "com.snapchat.android",
+    "com.twitter.android", "com.google.android.youtube", "com.spotify.music", "com.netflix.mediaclient",
+    "com.amazon.mShop.android.shopping", "com.google.android.gm", "com.zhiliaoapp.musically",
+    "com.phonepe.app", "com.google.android.apps.maps", "com.ubercab", "com.swiggy.android"
+]
 
-if __name__ == "__main__":
-    app_id = "com.instagram.android"  # Replace with your desired app ID
-    df = scrape_google_play_reviews(app_id, max_reviews=30)
-    df.to_csv("google_play_reviews.csv", index=False)
-    print("Scraped reviews saved to google_play_reviews.csv")
+# Output directory
+output_dir = "data"
+os.makedirs(output_dir, exist_ok=True)
+
+# Limit to 100 reviews total
+all_reviews = []
+review_limit = 100
+reviews_per_app = review_limit // len(app_ids)
+
+for app_id in app_ids:
+    try:
+        app_reviews, _ = reviews(
+            app_id,
+            lang='en',
+            country='us',
+            sort=Sort.NEWEST,
+            count=reviews_per_app
+        )
+        for r in app_reviews:
+            all_reviews.append({
+                "app_id": app_id,
+                "review": r['content'],
+                "score": r['score'],
+                "at": r['at']
+            })
+    except Exception as e:
+        print(f"Error fetching reviews for {app_id}: {e}")
+
+# Save as CSV
+df = pd.DataFrame(all_reviews)
+csv_path = os.path.join(output_dir, "scraped_reviews.csv")
+df.to_csv(csv_path, index=False)
+print(f"\n✅ Scraped {len(df)} reviews saved to {csv_path}")
