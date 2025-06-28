@@ -27,7 +27,7 @@ for app_id in app_ids:
             country='us',
             sort=Sort.NEWEST,
             count=reviews_per_app
-        )
+        ) 
         for r in app_reviews:
             all_reviews.append({
                 "app_id": app_id,
