@@ -1,0 +1,4 @@
+git clone https://github.com/datapudin/ai-feedback-categorizer.git
+cd ai-feedback-categorizer
+pip install -r requirements.txt
+streamlit run app.py
